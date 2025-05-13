@@ -1,17 +1,8 @@
-/**
- * AULA IoT - Embarcatech - Ricardo Prates - 004 - Webserver Raspberry Pi Pico w - wlan
- *
- * Material de suporte
- *
- * https://www.raspberrypi.com/documentation/pico-sdk/networking.html#group_pico_cyw43_arch_1ga33cca1c95fc0d7512e7fef4a59fd7475
- */
-
 #include <stdio.h>  // Biblioteca padrão para entrada e saída
 #include <string.h> // Biblioteca manipular strings
 #include <stdlib.h> // funções para realizar várias operações, incluindo alocação de memória dinâmica (malloc)
 
 #include "pico/stdlib.h"     // Biblioteca da Raspberry Pi Pico para funções padrão (GPIO, temporização, etc.)
-#include "hardware/adc.h"    // Biblioteca da Raspberry Pi Pico para manipulação do conversor ADC
 #include "pico/cyw43_arch.h" // Biblioteca para arquitetura Wi-Fi da Pico com CYW43
 #include "hardware/pwm.h"    // Biblioteca da Raspberry Pi Pico para manipulação de PWM (modulação por largura de pulso)
 
@@ -21,14 +12,14 @@
 
 // Credenciais WIFI - Tome cuidado se publicar no github!
 #include "SSIDPASSWORD.h" // Arquivo de cabeçalho com as credenciais Wi-Fi
-
-// Definição dos pinos dos LEDs
+// #define WIFI_SSID ""
+// #define WIFI_PASSWORD ""
+//  Definição dos pinos dos LEDs
 #define LED_PIN CYW43_WL_GPIO_LED_PIN // GPIO do CI CYW43
 #define LED_BLUE_PIN 12               // GPIO12 - LED azul
 #define LED_GREEN_PIN 11              // GPIO11 - LED verde
 #define LED_RED_PIN 13                // GPIO13 - LED vermelho
 #define BUZZER_PIN 10                 // GPIO10 - Buzzer
-#define JOYSTICK_X_PIN 27
 
 static int fan_speed = 0;                // Velocidade do ventilador (0-255)
 static bool fan_on = false;              // Estado do ventilador
@@ -48,8 +39,6 @@ int main()
 {
     // Inicializa todos os tipos de bibliotecas stdio padrão presentes que estão ligados ao binário.
     stdio_init_all();
-    adc_init();
-    adc_gpio_init(JOYSTICK_X_PIN);
 
     // Inicializa a arquitetura do cyw43
     while (cyw43_arch_init())
@@ -103,35 +92,28 @@ int main()
     tcp_accept(server, tcp_server_accept);
     printf("Servidor ouvindo na porta 80\n");
 
+    // Inicializa o GPIO do LED Azul , que indica que o servidor está ativo.
     gpio_init(LED_BLUE_PIN);              // Inicializa o GPIO do LED azul
     gpio_set_dir(LED_BLUE_PIN, GPIO_OUT); // Define o GPIO do LED azul como saída
     gpio_put(LED_BLUE_PIN, true);         // Liga o LED azul
 
+    // Inicializa e configura o PWM da GPIO do buzzer, pra que ele possa emitir sons.
     gpio_set_function(BUZZER_PIN, GPIO_FUNC_PWM);
     uint slice_num = pwm_gpio_to_slice_num(BUZZER_PIN);
     pwm_set_clkdiv(slice_num, 4.0);
     pwm_set_wrap(slice_num, 4095);
     pwm_set_enabled(slice_num, true);
 
-    // Inicializa o conversor ADC
-    adc_init();
     while (true)
     {
         cyw43_arch_poll(); // Necessário para manter o Wi-Fi ativo
 
         if (fan_on)
         {
-            if (!fan_speed_from_http) // Apenas ajusta pelo joystick se não foi ajustado via HTTP
-            {
-                adc_select_input(1); // Seleciona o ADC do eixo X do joystick
-                uint16_t raw_value = adc_read();
-                fan_speed = raw_value / 16; // Converte para 0-255
-            }
-
             // Ajusta a frequência e o volume do buzzer com base na velocidade
             uint slice_num = pwm_gpio_to_slice_num(BUZZER_PIN);
             uint frequency = 300 + (fan_speed * 2); // Frequência varia de 100 Hz a 2600 Hz
-            uint wrap = 10000000 / frequency;        // Calcula o wrap com base na frequência
+            uint wrap = 10000000 / frequency;       // Calcula o wrap com base na frequência
             if (wrap < 100)
                 wrap = 100; // Limita o valor mínimo do wrap
             pwm_set_wrap(slice_num, wrap);
@@ -177,14 +159,22 @@ void user_request(char **request)
         fan_speed = 0;
         fan_speed_from_http = false; // Reseta a origem da velocidade
     }
-    else if (strstr(*request, "GET /fan_speed=") != NULL)
+    else if (strstr(*request, "GET /fan_speed=50") != NULL)
     {
-        char *speed_str = strstr(*request, "fan_speed=") + 10;
-        fan_speed = atoi(speed_str);
-        if (fan_speed > 255)
-            fan_speed = 255;
-        fan_speed_from_http = true; // Marca que a velocidade foi ajustada via HTTP
+        fan_speed = 50; // Baixa velocidade
+        fan_speed_from_http = true;
     }
+    else if (strstr(*request, "GET /fan_speed=150") != NULL)
+    {
+        fan_speed = 150; // Média velocidade
+        fan_speed_from_http = true;
+    }
+    else if (strstr(*request, "GET /fan_speed=255") != NULL)
+    {
+        fan_speed = 255; // Alta velocidade
+        fan_speed_from_http = true;
+    }
+
 }
 
 // Função de callback para processar requisições HTTP
@@ -213,15 +203,16 @@ static err_t tcp_server_recv(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, er
     snprintf(html, sizeof(html),
              "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n"
              "<!DOCTYPE html><html><head><title>Controle de Ventilacao</title><style>"
-             "body{font-family:Arial;text-align:center;margin-top:50px;}button,input[type='range'],input[type='number']{font-size:20px;margin:10px;}"
-             "</style><script>let selectedSpeed=%d;function setSpeed(value){selectedSpeed=value;document.getElementById('speed_display').innerText=value;}"
-             "function sendSpeed(){fetch('/fan_speed='+selectedSpeed);alert('Velocidade enviada: '+selectedSpeed);}</script></head>"
-             "<body><h1>Controle de Ventilacao</h1><p>Estado:%s</p><p>Velocidade:<span id='speed_display'>%d</span></p>"
+             "body{font-family:Arial;text-align:center;margin-top:50px;}button{font-size:20px;margin:10px;}"
+             "</style></head>"
+             "<body><h1>Controle de Ventilacao</h1><p>Estado:%s</p>"
              "<form action=\"/fan_on\"><button>Ligar Ventilador</button></form>"
              "<form action=\"/fan_off\"><button>Desligar Ventilador</button></form>"
-             "<input type=\"range\" min=\"0\" max=\"255\" value=\"%d\" oninput=\"setSpeed(this.value)\"><br>"
-             "<button onclick=\"sendSpeed()\">Enviar Velocidade</button></body></html>",
-             fan_speed, fan_on ? "Ligado" : "Desligado", fan_speed, fan_speed);
+             "<button onclick=\"fetch('/fan_speed=50')\">Baixa Velocidade</button>"
+             "<button onclick=\"fetch('/fan_speed=150')\">Media Velocidade</button>"
+             "<button onclick=\"fetch('/fan_speed=255')\">Alta Velocidade</button>"
+             "</body></html>",
+             fan_on ? "Ligado" : "Desligado");
     // Escreve dados para envio (mas não os envia imediatamente).
     tcp_write(tpcb, html, strlen(html), TCP_WRITE_FLAG_COPY);
 
